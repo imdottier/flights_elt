@@ -42,15 +42,35 @@ def run_dbt_model(dbt_model: str = "model", first_run_identifier: str = None):
             return True
         return False
     
+    dbt_env = os.environ.copy()
+    dbt_env["DBT_LOG_PATH"] = "/tmp/dbt_logs"
+    dbt_env["DBT_TARGET_PATH"] = "/tmp/dbt_target"
+    
     if not is_first_run(first_run_identifier):
         excluded_tags.append("run_once")
         logging.info("Excluding 'run_once' models for subsequent runs.")
+    else:
+        logging.info("Running 'create_pgcrypto' operation for first run.")
+        result = subprocess.run(
+            [DBT_VENV_BIN, "run-operation", "create_pgcrypto"],
+            cwd=DBT_PROJECT_DIR,
+            env=dbt_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        log_subprocess_result(result)
+        if result.returncode != 0:
+            raise Exception(
+                f"DBT run-operation 'create_pgcrypto' failed with return code {result.returncode}"
+            )
 
-    # local
+
     # dbt_cmd = f"{DBT_VENV_BIN} run --select {dbt_model}"
-    
+
     dbt_cmd = [
-        "dbt", "run",
+        DBT_VENV_BIN, # <--- Calls /opt/airflow/dbt_venv/bin/dbt
+        "run",
         "--select", dbt_model,
     ]
     
@@ -61,6 +81,7 @@ def run_dbt_model(dbt_model: str = "model", first_run_identifier: str = None):
     logging.info(f"Running DBT command: {dbt_cmd}")
     result = subprocess.run(
         dbt_cmd,
+        env=dbt_env,
         # shell=True,
         cwd=DBT_PROJECT_DIR,
         stdout=subprocess.PIPE,

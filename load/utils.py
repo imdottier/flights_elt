@@ -70,9 +70,9 @@ def read_fact_data_for_overwrite(
 
         # --- Step 2: Read ONLY the relevant partitions from Silver ---
         logging.info("  Step 2: Reading only the affected partitions...")
-        
-        incremental_df = read_df(spark, target_schema, target_table, where_clause=f"ingestion_hour IN {tuple(new_ingestion_hours)}")
-        
+        ingestion_hours_sql = ", ".join([f"'{hour}'" for hour in new_ingestion_hours])
+        incremental_df = read_df(spark, target_schema, target_table, where=f"ingestion_hour IN ({ingestion_hours_sql})")
+
         # --- Step 3: Identify the full BUSINESS partitions to reload ---
         logging.info("  Step 3: Identifying affected business-date partitions...")
         partition_key_col = coalesce(col("dep_scheduled_at_utc"), col("arr_scheduled_at_utc"))
@@ -98,6 +98,7 @@ def read_fact_data_for_overwrite(
         )
 
         df_to_load = full_fct_df.where(col("flight_date").isin(dates_to_reload))
+        df_to_load = df_to_load.dropDuplicates(["flight_composite_pk"])
         logging.info(f"  Successfully prepared {df_to_load.count()} rows for overwrite.")
         
         return df_to_load

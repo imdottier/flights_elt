@@ -56,6 +56,8 @@ def write_flights_data(
             .drop(arr_runway_dim["_inserted_at"])
         )
 
+        fct_flights = fct_flights.dropDuplicates(["flight_composite_pk"])
+
         # # Get the unknown runway bk
         # unknown_runway_bk = silver_runways.filter(col("airport_bk") == -1).select("runway_bk").collect()[0]["runway_bk"]
 

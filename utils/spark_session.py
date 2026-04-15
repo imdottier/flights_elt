@@ -52,17 +52,53 @@ def get_spark_session(app_name: str="Test Pipeline") -> SparkSession:
         dev_driver_memory = os.getenv("SPARK_DEV_DRIVER_MEMORY", "4g")
         builder = builder.config("spark.driver.memory", dev_driver_memory)
 
+    elif mode == "dev_postgres_metastore":
+        logging.info(f"Using Hive Metastore Thrift service for Jupyter notebooks")
+        
+        builder = (
+            builder.master("local[*]")
+                    .config("spark.sql.warehouse.dir", SPARK_WAREHOUSE_DEV)
+                    .config("spark.hadoop.fs.defaultFS", "file:///")
+                    .config("spark.hadoop.validateOutputSpecs", "false")
+                    .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem")
+                    .config("spark.driver.memory", "4g")
+                    .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3")
+                    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+                    .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+                    .config("spark.ui.showConsoleProgress", "false")
+                    .config("spark.sql.debug.maxToStringFields", "10")
+                    .config("spark.executor.extraJavaOptions", "-Dlog4j2.formatMsgNoLookups=true")
+                    .config("spark.driver.extraJavaOptions",
+                        "-Dlog4j2.formatMsgNoLookups=true "
+                        "-Dorg.apache.spark.ui.showConsoleProgress=false "
+                        "-Dlog4j.rootCategory=ERROR,console "
+                        "-Dlog4j.logger.org.apache.spark=ERROR "
+                        "-Dlog4j.logger.org.spark_project=ERROR "
+                        "-Dlog4j.logger.org.apache.hadoop=ERROR "
+                        "-Dlog4j.logger.io.delta=ERROR")
+                    # Use Thrift metastore connection like Docker containers do
+                    .config("spark.hadoop.hive.metastore.uris", "thrift://localhost:19083")
+                    .config("spark.hadoop.hive.metastore.warehouse.dir", SPARK_WAREHOUSE_DEV)
+                    .config("spark.sql.catalogImplementation", "hive")
+                    .enableHiveSupport()
+        )
+
+        dev_driver_memory = os.getenv("SPARK_DEV_DRIVER_MEMORY", "4g")
+        builder = builder.config("spark.driver.memory", dev_driver_memory)
     elif mode == "prod":
-        print(f" Using warehouse directory: {SPARK_WAREHOUSE_PROD}")
+        logging.info(f" Using warehouse directory: {SPARK_WAREHOUSE_PROD}")
         
         DELTA_JAR_PATH = os.getenv("DELTA_JAR_PATH", "/shared/jars/delta-spark_2.12-3.2.0.jar")
         DELTA_STORAGE_JAR_PATH = os.getenv("DELTA_STORAGE_JAR_PATH", "/shared/jars/delta-storage-3.2.0.jar")
         POSTGRES_JAR_PATH = os.getenv("POSTGRES_JAR_PATH", "/shared/jars/postgresql-42.7.3.jar")
 
-        local_ip = socket.gethostbyname(socket.gethostname())
-        print(f"Airflow IP: {local_ip}")
+        driver_host = os.getenv("SPARK_DRIVER_HOST")
+
+        if not driver_host:
+            driver_host = socket.gethostbyname(socket.gethostname())
+        logging.info(f"Airflow IP: {driver_host}")
         builder = (
-            builder.config("spark.driver.host", local_ip)  # bind inside container
+            builder.config("spark.driver.host", driver_host)  # bind inside container
                 .config("spark.driver.bindAddress", "0.0.0.0")
                 .config("spark.master", SPARK_MASTER_URL)  # e.g., "spark://spark-master:7077"
                 .config("spark.executor.cores", "1")

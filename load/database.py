@@ -29,6 +29,7 @@ def get_db():
         if conn:
             conn.rollback()
         logging.error(f"Error in database: {e}", exc_info=True)
+        raise
     finally:
         if cur:
             cur.close()

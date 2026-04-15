@@ -28,23 +28,22 @@ from main import run_full_pipeline
 
 def run_pipeline_airflow(**context):
     conf = context["dag_run"].conf
+    logging.info(f"Received DAG run conf: {conf}")
 
-    if conf is None:
+    ingestion_hours = conf.get("ingestion_hours", None)
+
+    if ingestion_hours == "all":
+        ingestion_hours = None  # interpret "all" as full load
+        logging.info("Ingestion hours set to 'all': running full load.")
+    elif ingestion_hours is None:
+        # Scheduled run: calculate ingestion_hours based on execution time
         exec_time = context["logical_date"] - timedelta(hours=2)
         ingestion_hours = [exec_time.strftime("%Y-%m-%d-%H")]
         logging.info(f"Running scheduled run at: {ingestion_hours}")
-    else:   
-        # Use ingestion_hours from conf if provided, else default to scheduled interval
-        ingestion_hours = conf.get("ingestion_hours")
-
-        if ingestion_hours is None:
-            # Full backfill run: parse everything available
-            ingestion_hours = None  # your pipeline should interpret None as “parse all”
-            logging.info("Running full load: parsing all available data.")
-        else:
-            # Manual run with specific ingestion_hours list
-            logging.info(f"Manual run with provided ingestion_hours: {ingestion_hours}")
-        
+    else:
+        # Manual run with specific ingestion_hours list
+        logging.info(f"Manual run with provided ingestion_hours: {ingestion_hours}")
+    
     run_full_pipeline(
         ingestion_hours = ingestion_hours,
         process_detailed_dims = conf.get("process_detailed_dims", False),
@@ -54,8 +53,9 @@ def run_pipeline_airflow(**context):
     )
 
 @dag(
-    schedule=timedelta(hours=12),
-    start_date=datetime(2025, 11, 15, 2, tzinfo=timezone.utc),
+    schedule="0 2,14 * * *", 
+    start_date=datetime(2025, 11, 25, 2, tzinfo=timezone.utc),
+    is_paused_upon_creation=True,
     catchup=False,
     tags=["example"],
 )
