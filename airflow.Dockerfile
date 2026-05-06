@@ -28,4 +28,5 @@ ARG PYTHON_VERSION=3.12
 ARG AIRFLOW_VERSION=3.1.3
 RUN --mount=type=cache,id=pip_cache_airflow,target=/home/airflow/.cache/pip \
     pip install -r /app/requirements.txt && \
-    pip install apache-airflow-providers-fab
+    pip install apache-airflow-providers-fab && \
+    pip install apache-airflow-providers-apache-spark

@@ -7,11 +7,10 @@ x-airflow-common:
     - .env
   environment:
     &airflow-common-env
-    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_DB_USER}:${POSTGRES_DB_PASSWORD}@postgres:5432/${AIRFLOW_DB_NAME}
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_DB_USER}:${POSTGRES_DB_PASSWORD}@postgres/${AIRFLOW_DB_NAME}
-    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     # AIRFLOW__CORE__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
@@ -30,220 +29,288 @@ x-airflow-common:
     AIRFLOW__API_AUTH__JWT_SECRET: "${AIRFLOW_SECRET_KEY}"
     DBT_HOST: postgres
     HOME: /home/airflow
+    PYTHONPATH: /app
   volumes:
     - .:/app
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
     - ./dbt_flights:/app/dbt_flights
-    - shared-jars:/shared/jars:ro
-    - spark-warehouse:/app/spark-warehouse
+    # - spark-warehouse:/app/spark-warehouse
     - ${HOME}/.dbt:/home/airflow/.dbt
+
+    # For Spark
+    - ./conf/log4j2.properties:/opt/spark/conf/log4j2.properties
+    - ./conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    - spark-events:/opt/spark/spark-events
   depends_on:
     &airflow-common-depends-on
-    redis:
-      condition: service_healthy
     postgres:
       condition: service_healthy
-    init-jars:
-      condition: service_completed_successfully
   networks:
     - default
     - spark-network
 
 
+x-spark-common: &spark-common
+  build:
+    context: .
+    dockerfile: spark.Dockerfile
+  user: "root"
+  restart: unless-stopped
+  volumes:
+    - .:/app
+    - ./conf/log4j2.properties:/opt/spark/conf/log4j2.properties
+    - ./conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    - spark-events:/opt/spark/spark-events # The magical shared log folder!
+  networks:
+    - default
+    - spark-network
+  environment: &spark-common-env
+    # Python
+    PYTHONPATH: /app
+    PYSPARK_PYTHON: python3
+    PYSPARK_DRIVER_PYTHON: python3
+    
+    # MinIO / S3 Setup
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    AWS_REGION: us-east-1
+
+# Spark-enabled Airflow variant (only build where needed)
+x-airflow-spark:
+  &airflow-spark
+  <<: *airflow-common
+  build:
+    context: .
+    dockerfile: airflow-spark.Dockerfile
+  environment:
+    <<: [*airflow-common-env, *spark-common-env]
+
 
 services:
-  init-jars:
-    build:
-      context: .
-      dockerfile: spark.Dockerfile
-    user: "root"
-    container_name: ${PROJECT_NAME}-init-jars
-    command: >
-      bash -c "
-        cp /opt/bitnami/spark/jars/delta-spark_2.12-3.2.0.jar /shared/jars/ &&
-        cp /opt/bitnami/spark/jars/delta-storage-3.2.0.jar /shared/jars/ &&
-        cp /opt/bitnami/spark/jars/postgresql-42.7.3.jar /shared/jars/ &&
-        echo 'Jars copied successfully'
-      "
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    container_name: ${PROJECT_NAME}-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:    
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
     volumes:
-      - shared-jars:/shared/jars
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+      - spark-network
 
+  minio-init:
+    image: minio/mc:latest
+    container_name: ${PROJECT_NAME}-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    networks:
+      - default
+      - spark-network
+    entrypoint: >
+      bash -c "
+        sleep 5 && 
+        mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} && 
+        mc mb --ignore-existing myminio/data && 
+        echo 'MinIO bucket "data" created successfully'
+      "
+
+  # hive-metastore-v2:
+  #   build:
+  #     context: .
+  #     dockerfile: hive.Dockerfile
+  #   container_name: ${PROJECT_NAME}-hive-metastore-v2
+  #   restart: unless-stopped
+  #   depends_on:
+  #     create-dbs:
+  #       condition: service_completed_successfully
+  #     minio:
+  #       condition: service_healthy
+  #   environment:
+  #     - SERVICE_NAME=metastore
+  #     - DB_DRIVER=postgres
+  #     # Hive 3.1.3 uses these standard vars for S3A
+  #     - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+  #     - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+  #     # This is the standard Hive 3 way to pass DB credentials
+  #     - SERVICE_OPTS=-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/${SPARK_METASTORE_DB_NAME} -Djavax.jdo.option.ConnectionUserName=${POSTGRES_DB_USER} -Djavax.jdo.option.ConnectionPassword=${POSTGRES_DB_PASSWORD}
+  #   ports:
+  #     - "9083:9083"
+  #   networks:
+  #     - default
+  #     - spark-network
+  #   volumes:
+  #     # We mount our pre-configured hive-site.xml directly
+  #     - ./conf/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
 
   hive-metastore:
-    image: apache/hive:4.0.0
+    build:
+      context: .
+      dockerfile: hive.Dockerfile
     container_name: ${PROJECT_NAME}-hive-metastore
     restart: unless-stopped
     depends_on:
-      - init-jars
-      - create-dbs
+      create-dbs:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     environment:
       - SERVICE_NAME=metastore
       - DB_DRIVER=postgres
-      - SERVICE_OPTS=-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/${SPARK_METASTORE_DB_NAME} -Djavax.jdo.option.ConnectionUserName=${POSTGRES_DB_USER} -Djavax.jdo.option.ConnectionPassword=${POSTGRES_DB_PASSWORD}
-      - HIVE_AUX_JARS_PATH=/shared/jars/postgresql-42.7.3.jar
-    command: >
-      bash -c "
-        if ! /opt/hive/bin/schematool -dbType postgres -info 2>/dev/null; then
-          /opt/hive/bin/schematool -dbType postgres -initSchema
-        fi &&
-        /opt/hive/bin/hive --service metastore
-      "
-    volumes:
-      - shared-jars:/shared/jars:ro
-      - spark-warehouse:/app/spark-warehouse
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - AWS_REGION=us-east-1
+      - S3_ENDPOINT_URL=http://minio:9000
+      - HADOOP_CLASSPATH=/opt/hive/lib/hadoop-aws-3.3.6.jar:/opt/hive/lib/aws-java-sdk-bundle-1.12.367.jar
+      - SERVICE_OPTS=
+          -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+          -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/${SPARK_METASTORE_DB_NAME}
+          -Djavax.jdo.option.ConnectionUserName=${POSTGRES_DB_USER}
+          -Djavax.jdo.option.ConnectionPassword=${POSTGRES_DB_PASSWORD}
+          -Dhive.metastore.authorization.storage.checks=false
+          -Dmetastore.authorization.storage.checks=false
+          -Dfs.s3a.endpoint=http://minio:9000
+          -Dfs.s3a.path.style.access=true
+          -Dfs.s3a.connection.ssl.enabled=false
+          -Dfs.s3a.access.key=${MINIO_ROOT_USER}
+          -Dfs.s3a.secret.key=${MINIO_ROOT_PASSWORD}
+          -Dfs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+          -Dorg.apache.hadoop.fs.s3a=DEBUG
+          -Dsoftware.amazon.awssdk=DEBUG
+          -DHADOOP_ROOT_LOGGER=DEBUG,console
     ports:
       - "9083:9083"
     networks:
       - default
       - spark-network
+    volumes:
+      - ./conf/hive-site.xml.template:/opt/hive/conf/hive-site.xml.template:ro
+      - ./conf/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
 
-  # ---------------------------------------------------------
+
+# ---------------------------------------------------------
   # Spark Master
   # ---------------------------------------------------------
   spark-master:
-    build:
-      context: .
-      dockerfile: spark.Dockerfile
-    user: "root"
+    <<: *spark-common # Injects everything from the template!
     container_name: ${PROJECT_NAME}-spark-master
-    restart: unless-stopped
     environment:
-      - SPARK_MODE=master
-      - SPARK_MASTER_HOST=spark-master
-      - SPARK_DRIVER_MEMORY=${SPARK_DRIVER_MEMORY:-2g}
-      - SPARK_USER=root
-
-      # Python
-      - PYTHONPATH=/app
-      - PYSPARK_PYTHON=/opt/bitnami/python/bin/python3
-      - PYSPARK_DRIVER_PYTHON=/opt/bitnami/python/bin/python3
-
-      # Delta Lake (JARs already baked into image)
-      - SPARK_SQL_EXTENSIONS=io.delta.sql.DeltaSparkSessionExtension
-      - SPARK_SQL_CATALOG_SPARK_CATALOG=org.apache.spark.sql.delta.catalog.DeltaCatalog
-
-    volumes:
-      - .:/app
-      - ./conf/log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties
-      - spark-warehouse:/app/spark-warehouse
+      <<: *spark-common-env # Injects the common environment variables!
+      SPARK_MASTER_HOST: spark-master
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+    command: [
+      "/opt/spark/bin/spark-class",
+      "org.apache.spark.deploy.master.Master",
+      "--host", "spark-master",
+      "--port", "7077",
+      "--webui-port", "8080",
+    ]
     ports:
-      - "8080:8080"   # Spark Master UI
-      - "7077:7077"   # Master RPC Port
-      - "4040:4040"   # Application UI
-    networks:
-      - default
-      - spark-network
+      - "8080:8080"   # Master UI
+      - "7077:7077"   # RPC Port
+      - "4040:4040"   # App UI
 
   # ---------------------------------------------------------
   # Spark Worker
   # ---------------------------------------------------------
   spark-worker:
-    build:
-      context: .
-      dockerfile: spark.Dockerfile
+    <<: *spark-common
     container_name: ${PROJECT_NAME}-spark-worker-1
-    restart: unless-stopped
     depends_on:
       - spark-master
-
     environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES:-1}
-      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY:-2g}
-      - SPARK_USER=root
+      <<: *spark-common-env
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-1}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2g}
+    command: [
+      "/opt/spark/bin/spark-class",
+      "org.apache.spark.deploy.worker.Worker",
+      "--webui-port", "8081",
+      "spark://spark-master:7077"
+    ]
 
-      # Python
-      - PYTHONPATH=/app
-      - PYSPARK_PYTHON=/opt/bitnami/python/bin/python3
-      - PYSPARK_DRIVER_PYTHON=/opt/bitnami/python/bin/python3
+  # ---------------------------------------------------------
+  # Spark History Server
+  # ---------------------------------------------------------
+  spark-history-server:
+    <<: *spark-common
+    container_name: ${PROJECT_NAME}-spark-history
+    # Run as root if you need to create folders in /opt/spark
+    user: "0" 
+    environment:
+      <<: *spark-common-env
+      # This tells the Apache entrypoint to start the History Server
+      SPARK_NO_DAEMONIZE: "true"
+    # The official image entrypoint will handle the rest if you pass the class
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
+    ports:
+      - "18080:18080"
 
-      # Delta (already in image)
-      - SPARK_SQL_EXTENSIONS=io.delta.sql.DeltaSparkSessionExtension
-      - SPARK_SQL_CATALOG_SPARK_CATALOG=org.apache.spark.sql.delta.catalog.DeltaCatalog
-
-    user: "${UID:-1000}:0"
-    volumes:
-      - .:/app
-      - ./conf/log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties
-      - spark-warehouse:/app/spark-warehouse
+  spark-thrift-server:
+    <<: *spark-common
+    container_name: ${PROJECT_NAME}-spark-thrift
+    environment:
+      <<: *spark-common-env
+    command: [
+      "/opt/spark/bin/spark-submit",
+      "--class", "org.apache.spark.sql.hive.thriftserver.HiveThriftServer2",
+      "--master", "spark://spark-master:7077",
+      "--conf", "spark.sql.hive.thriftServer.singleSession=true",
+      "--conf", "spark.hadoop.hive.metastore.uris=thrift://hive-metastore:9083",
+      "--conf", "spark.sql.warehouse.dir=s3a://data/",
+      "--conf", "spark.hadoop.hive.metastore.warehouse.dir=s3a://data/",
+      "--conf", "spark.cores.max=2",
+      "--conf", "spark.executor.memory=2g",
+      "--hiveconf", "hive.server2.thrift.bind.host=0.0.0.0",
+      "--hiveconf", "hive.server2.authentication=NOSASL",
+      "spark-internal"
+    ]
+    depends_on:
+      - spark-master
+      - hive-metastore
+    ports:
+      - "10000:10000" # Thrift Server Port  
+      - "4041:4040"
     networks:
       - default
       - spark-network
 
+  trino:
+    image: trinodb/trino:latest
+    container_name: ${PROJECT_NAME}-trino
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./conf/trino/etc/config.properties:/usr/lib/trino/etc/config.properties:ro
+      - ./conf/trino/catalog/delta.properties:/etc/trino/catalog/delta.properties
+    networks:
+      - default
 
-  # spark-master:
-  #   build:
-  #     context: .
-  #     dockerfile: spark.Dockerfile
-  #   user: "root"
-  #   container_name: ${PROJECT_NAME}-spark-master
-  #   restart: unless-stopped
-  #   depends_on:
-  #   - hive-metastore
-  #   environment:
-  #     - SPARK_MODE=master
-  #     - SPARK_DRIVER_MEMORY=${SPARK_DRIVER_MEMORY}
-  #     - SPARK_USER=root
-  #     - PYTHONPATH=/app
-  #     - PYSPARK_PYTHON=/opt/bitnami/python/bin/python3
-  #     - PYSPARK_DRIVER_PYTHON=/opt/bitnami/python/bin/python3
-  #     - SPARK_JARS_PACKAGES=io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3
-  #     - SPARK_SQL_EXTENSIONS=io.delta.sql.DeltaSparkSessionExtension
-  #     - SPARK_SQL_CATALOG=spark_catalog
-  #     - SPARK_SQL_CATALOG_SPARK_CATALOG=org.apache.spark.sql.delta.catalog.DeltaCatalog
-  #     - SPARK_HIVE_METASTORE_URIS=thrift://hive-metastore:9083
-  #   # command: >
-  #   #   /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.master.Master      
-  #   volumes:
-  #     - .:/app
-  #     - ./conf/log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties
-  #     - shared-jars:/shared/jars 
-  #   ports:
-  #     - "8080:8080" # Spark Master UI
-  #     - "4040:4040" # Spark Application UI
-  #     - "7077:7077" # Spark Master Port
-  #   # networks:
-  #   #   - spark-network
-
-  # spark-worker:
-  #   build:
-  #     context: .
-  #     dockerfile: spark.Dockerfile
-  #   user: "root"
-  #   container_name: ${PROJECT_NAME}-spark-worker-1
-  #   restart: unless-stopped
-  #   # The worker depends on the master being available.
-  #   depends_on:
-  #     - spark-master
-
-  #   # command: >
-  #   #   /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-        
-  #   environment:
-  #     - SPARK_MODE=worker
-  #     - SPARK_MASTER_URL=spark://spark-master:7077 
-  #     - SPARK_WORKER_CORES=${SPARK_WORKER_CORES:-1}
-  #     - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY:-2g}
-  #     - SPARK_USER=root
-  #     - PYTHONPATH=/app
-  #     - PYSPARK_PYTHON=/opt/bitnami/python/bin/python3
-  #     - PYSPARK_DRIVER_PYTHON=/opt/bitnami/python/bin/python3
-  #     - SPARK_JARS_PACKAGES=io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3
-  #     - SPARK_SQL_EXTENSIONS=io.delta.sql.DeltaSparkSessionExtension
-  #     - SPARK_SQL_CATALOG=spark_catalog
-  #     - SPARK_SQL_CATALOG_SPARK_CATALOG=org.apache.spark.sql.delta.catalog.DeltaCatalog
-  #     - SPARK_HIVE_METASTORE_URIS=thrift://hive-metastore:9083
-  #   volumes:
-  #     - .:/app
-  #     - ./conf/log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties
-  #   # networks:
-  #   #   - spark-network
 
   # -----------------------------
-  # Postgres (for DW + Airflow metastore)
+  # Postgres (for Hive + Airflow)
   # -----------------------------
   postgres:
     image: postgres:15
@@ -256,7 +323,7 @@ services:
     ports:
       - "15432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data-v2:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_DB_USER} -d ${POSTGRES_DB_NAME:-postgres}"]
       interval: 10s
@@ -266,49 +333,6 @@ services:
     networks:
       - default
       - spark-network
-
-  redis:
-    # Redis is limited to 7.2-bookworm due to licencing change
-    # https://redis.io/blog/redis-adopts-dual-source-available-licensing/
-    image: redis:7.2-bookworm
-    expose:
-      - 6379
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 30s
-      retries: 50
-      start_period: 30s
-    restart: always
-    networks:
-      - default
-      - spark-network
-
-  alembic-run:
-    build:
-      context: .
-      dockerfile: create_dbs.Dockerfile # just bc it has alembic
-    container_name: ${PROJECT_NAME}-alembic-run
-    volumes:
-      - .:/app
-    working_dir: /app
-    environment:
-      POSTGRES_DB_HOST: postgres
-      POSTGRES_DB_NAME: ${POSTGRES_DB_NAME}
-      POSTGRES_DB_USER: ${POSTGRES_DB_USER}
-      POSTGRES_DB_PASSWORD: ${POSTGRES_DB_PASSWORD}
-    networks:
-      - default
-      - spark-network
-    profiles:
-      - tools
-    
-
-    depends_on:
-      create-dbs:
-        condition: service_completed_successfully
-    
-    command: ["alembic", "upgrade", "head"]
 
   create-dbs:
     env_file:
@@ -342,7 +366,7 @@ services:
         condition: service_completed_successfully
 
   airflow-scheduler:
-    <<: *airflow-common
+    <<: *airflow-spark
     container_name: ${PROJECT_NAME}-airflow-scheduler
     command: scheduler
     restart: always
@@ -378,39 +402,14 @@ services:
         airflow db migrate
       "
 
-  airflow-cli:
-    container_name: ${PROJECT_NAME}-airflow-cli
-    <<: *airflow-common
-    command: bash -c "airflow"
-    depends_on:
-      postgres:
-        condition: service_healthy
+  # airflow-cli:
+  #   container_name: ${PROJECT_NAME}-airflow-cli
+  #   <<: *airflow-common
+  #   command: bash -c "airflow"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
 
-
-  airflow-worker:
-    <<: *airflow-common
-    command: celery worker
-    healthcheck:
-      # yamllint disable rule:line-length
-      test:
-        - "CMD-SHELL"
-        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    environment:
-      <<: *airflow-common-env
-      # Required to handle warm shutdown of the celery workers properly
-      # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
-      DUMB_INIT_SETSID: "0"
-    restart: always
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-apiserver:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
 
   airflow-triggerer:
     <<: *airflow-common
@@ -423,37 +422,14 @@ services:
       start_period: 30s
     restart: always
     depends_on:
-      <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
 
-
-  # You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
-  # or by explicitly targeted on the command line e.g. docker-compose up flower.
-  # See: https://docs.docker.com/compose/profiles/
-  flower:
-    <<: *airflow-common
-    command: celery flower
-    profiles:
-      - flower
-    ports:
-      - "5555:5555"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: always
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
 
 volumes:
-  shared-jars:
-  postgres-data:
-  spark-warehouse:
+  postgres-data-v2:
+  minio-data:
+  spark-events:
 
 networks:
   spark-network:
