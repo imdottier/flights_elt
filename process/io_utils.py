@@ -24,6 +24,7 @@ def write_delta_table(
     df: DataFrame,
     db_name: str,
     table_name: str,
+    raw_base_path: str,
     write_mode: str, # 'overwrite_table', 'overwrite_partitions', 'merge'
     merge_keys: list[str] | None = None,
     partition_cols: list[str] | None = None,
@@ -37,10 +38,11 @@ def write_delta_table(
         df: The DataFrame to write.
         db_name: The database name (e.g., 'bronze', 'silver').
         table_name: The name of the target table.
+        raw_base_path: The base path for the raw data.
         partition_cols: A list of column names to partition the table by (only used on creation).
     """
     full_table_name = f"{db_name}.{table_name}"
-    table_path = f"{data_dir}/{db_name}/{table_name}"
+    table_path = f"{raw_base_path}/{db_name}/{table_name}"
     logging.info(f"--- Preparing to write to Delta table: {full_table_name} at {table_path} ---")
 
     # Safety checks
@@ -50,7 +52,8 @@ def write_delta_table(
         raise ValueError("FATAL: 'merge_keys' must be provided for 'merge' mode.")
 
     try:
-        table_exists = spark.catalog.tableExists(full_table_name)
+        # Check by path since it's external table
+        table_exists = DeltaTable.isDeltaTable(spark, table_path)
 
         if not table_exists:
             logging.info(f"Table '{full_table_name}' does not exist. Creating new external table...")
@@ -61,7 +64,6 @@ def write_delta_table(
                     df.write
                     .format("delta")
                     .mode("overwrite")
-                    .option("overwriteSchema", "true")
                     .partitionBy(*partition_cols)
                     .save(table_path)
                 )
@@ -73,7 +75,6 @@ def write_delta_table(
                     df.write
                     .format("delta")
                     .mode("overwrite")
-                    .option("overwriteSchema", "true") # Safe to use here
                     .save(table_path)
                 )
 
@@ -99,10 +100,11 @@ def write_delta_table(
         # --- Logic for Dynamic Partition Overwrite ---
         elif write_mode == "overwrite_partitions":
             logging.info(f"Performing a DYNAMIC PARTITION overwrite for {full_table_name}.")
-            spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
             df.write.format("delta").mode("overwrite").option("mergeSchema", "true") \
+                .option("partitionOverwriteMode", "dynamic") \
                 .partitionBy(*partition_cols).save(table_path)
-    
+            spark.sql(f"CREATE TABLE IF NOT EXISTS {full_table_name} USING DELTA LOCATION '{table_path}'")
+
         # --- Logic for Merge ---
         # Used only if target table expects data from 1 source
         # use merge_delta_table otherwise
@@ -165,6 +167,7 @@ def merge_delta_table(
     arriving_df: DataFrame,
     db_name: str,
     table_name: str,
+    raw_base_path: str,
     merge_keys: list[str],
     reconciliation_rules: dict[str, str],
     metadata_cols: list[str] = ["_ingested_at", "_inserted_at"],
@@ -174,10 +177,11 @@ def merge_delta_table(
     and merges the resulting "golden record" back.
     """
     full_table_name = f"{db_name}.{table_name}"
-    table_path = f"{data_dir}/{db_name}/{table_name}"
+    table_path = f"{raw_base_path}/{db_name}/{table_name}"
 
     try:
-        if not spark.catalog.tableExists(full_table_name):
+        table_exists = DeltaTable.isDeltaTable(spark, table_path)
+        if not table_exists:
             logging.info(f"Table '{full_table_name}' does not exist. Creating a new table...")
             data_cols = [c for c in arriving_df.columns if c not in merge_keys + metadata_cols]
             arriving_df = arriving_df.withColumn(
@@ -275,6 +279,7 @@ def merge_delta_table_with_scd(
     arriving_df: DataFrame,
     db_name: str,
     table_name: str,
+    raw_base_path: str,
     business_key: str,
     business_key_version: str,
     tracked_attribute_cols: dict[str, int],
@@ -300,13 +305,13 @@ def merge_delta_table_with_scd(
         tracked_attribute_cols: A dictionary of column names to their corresponding version numbers.
         metadata_cols: A list of metadata column names (default=["_ingested_at", "_inserted_at"]).
     """
-    table_path = f"{data_dir}/{db_name}/{table_name}"
-
+    table_path = f"{raw_base_path}/{db_name}/{table_name}"
 
     now = current_timestamp()
 
     try:
-        if not spark.catalog.tableExists(full_table_name):
+        table_exists = DeltaTable.isDeltaTable(spark, table_path)
+        if not table_exists:
             logging.info(f"Table {full_table_name} does not exist. Creating a new table...")
             # Create the table
             arriving_df = arriving_df.withColumn(

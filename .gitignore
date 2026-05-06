@@ -7,6 +7,7 @@ bronze_raw/
 gold/
 
 data/
+local_data/
 
 .env
 test_data.json

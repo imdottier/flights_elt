@@ -11,6 +11,7 @@ def write_aircrafts_data(
     spark: SparkSession,
     enriched_flights: DataFrame,
     batch_time: datetime,
+    raw_base_path: str,
 ) -> None:
     """
     Writes the dim_aircrafts table to a Delta table.
@@ -42,6 +43,7 @@ def write_aircrafts_data(
             df=dim_aircrafts,
             db_name="silver",
             table_name="dim_aircrafts",
+            raw_base_path=raw_base_path,
             write_mode="merge",
             merge_keys=["aircraft_bk"]
         )

@@ -25,7 +25,9 @@ def run_silver_pipeline(
     spark: SparkSession,
     ingestion_hours: list[str],
     batch_time: datetime,
+    raw_base_path: str,
     process_runways: bool = True,
+    config_dict: dict = None
 ) -> None:
     """
     Runs the bronze to silver pipeline.
@@ -37,6 +39,9 @@ def run_silver_pipeline(
     logging.info("="*50)
     logging.info("=== Starting the silver pipeline ===")
     logging.info("="*50)
+
+    spark.sql("SHOW DATABASES;").show()
+    spark.sql("SHOW TABLES IN bronze;").show()
 
     # Create the silver database if not exists
     spark.sql("CREATE DATABASE IF NOT EXISTS silver")
@@ -65,9 +70,9 @@ def run_silver_pipeline(
         logging.info(f"Successfully cached {num_flights} enriched flight records.")
 
         # --- 3. Write Dimensions using the Cached DataFrame ---
-        write_aircrafts_data(spark, enriched_flights_df, batch_time)
-        write_airlines_data(spark, enriched_flights_df, batch_time)
-        write_airports_data(spark, bronze_airports_df, enriched_flights_df, batch_time)
+        write_aircrafts_data(spark, enriched_flights_df, batch_time, raw_base_path)
+        write_airlines_data(spark, enriched_flights_df, batch_time, raw_base_path)
+        write_airports_data(spark, bronze_airports_df, enriched_flights_df, batch_time, raw_base_path, config_dict)
 
         # Only process runways when there's new data
         if process_runways:
@@ -75,13 +80,13 @@ def run_silver_pipeline(
             if bronze_airports_df is None:
                 logging.warning("Cannot process runways because bronze.airports data is missing. Skipping.")
             else:
-                write_runways_data(spark, bronze_airports_df, batch_time)
+                write_runways_data(spark, bronze_airports_df, batch_time, raw_base_path, config_dict)
         else:
             logging.info("Skipping optional runway dimension processing as requested.")
 
         # --- 4. Write the Fact Table using the Cached DataFrame ---
         logging.info("Writing final fact table fct_flights...")
-        write_flights_data(spark, enriched_flights_df, batch_time)
+        write_flights_data(spark, enriched_flights_df, batch_time, raw_base_path, config_dict)
 
     except Exception as e:
         logging.error(f"An unexpected error occurred in the silver pipeline: {e}", exc_info=True)
@@ -100,6 +105,8 @@ def run_silver_pipeline(
 
 def run_ourairports_pipeline(
     spark: SparkSession,
+    raw_base_path: str,
+    config_dict: dict
 ) -> None:
     """
     Runs the pipeline that processes the OurAirports data.
@@ -118,10 +125,10 @@ def run_ourairports_pipeline(
     try:
         logging.info("Loading OurAirports data...")
         # Load OurAirports data from CSV files
-        ourairports_airports = csv_to_df(spark, "airports.csv")
-        ourairports_runways = csv_to_df(spark, "runways.csv")
-        ourairports_regions = csv_to_df(spark, "regions.csv")
-        ourairports_countries = csv_to_df(spark, "countries.csv")
+        ourairports_airports = csv_to_df(spark, raw_base_path, "airports.csv")
+        ourairports_runways = csv_to_df(spark, raw_base_path, "runways.csv")
+        ourairports_regions = csv_to_df(spark, raw_base_path, "regions.csv")
+        ourairports_countries = csv_to_df(spark, raw_base_path, "countries.csv")
 
         # Filter the airports data
         filtered_airports = filter_ourairports_airports(ourairports_airports)
@@ -131,18 +138,18 @@ def run_ourairports_pipeline(
         logging.info("Writing OurAirports data...")
         # Write the data to the silver database
         if filtered_airports:
-            write_ourairports_airports_data(spark, filtered_airports, batch_time)
+            write_ourairports_airports_data(spark, filtered_airports, batch_time, raw_base_path, config_dict)
         
         if ourairports_runways and filtered_airports:
             write_ourairports_runways_data(
                 spark, ourairports_runways,
-                filtered_airports, batch_time
+                filtered_airports, batch_time, raw_base_path, config_dict
             )
 
         if ourairports_regions and ourairports_countries:
             write_ourairports_regions_data(
                 spark, ourairports_regions,
-                ourairports_countries, batch_time
+                ourairports_countries, batch_time, raw_base_path, config_dict
             )
     
     except Exception as e:

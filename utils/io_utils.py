@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, lit
 from datetime import datetime
+import fsspec
 
 load_dotenv()
 
@@ -13,20 +14,15 @@ base = Path(os.getenv("WORKSPACE_BASE", "./"))
 BRONZE_RAW_BASE = base / "bronze_raw"
 
 
-def write_json_to_bronze(data: dict, path: str, file_name: str):
-    """Safely writes JSON data to the bronze layer."""
-    file_path = None
+def write_json_to_bronze(data: dict, full_path: str):
+    """Safely writes JSON data to the bronze layer now with fsspec"""
     try:
-        full_path = BRONZE_RAW_BASE / path
-        full_path.mkdir(parents=True, exist_ok=True)
-        file_path = full_path / file_name
-
-        with open(file_path, "w") as f:
+        with fsspec.open(full_path, "w") as f:
             json.dump(data, f, ensure_ascii=False)
-        logging.info(f"Successfully wrote data to {file_path}")
+        logging.info(f"Successfully wrote data to {full_path}")
 
-    except (IOError, OSError) as e:
-        logging.error(f"Failed to write JSON to {file_path}. Error: {e}")
+    except Exception as e:
+        logging.error(f"Failed to write JSON to {full_path}. Error: {e}", exc_info=True)
         raise
 
 

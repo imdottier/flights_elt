@@ -1,23 +1,18 @@
 import yaml
-import os
-from pathlib import Path
 from pyspark.sql.functions import col
-from utils.spark_session import get_spark_session
-from dotenv import load_dotenv
 
-load_dotenv()
+def load_config(config_path: str) -> dict:
+    """
+    Loads the YAML config from an explicit path provided by the orchestrator.
+    """
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
 
-base = Path(os.getenv("WORKSPACE_BASE", "./"))
-BRONZE_RAW_BASE = base / "bronze_raw"
-script_dir = BRONZE_RAW_BASE.parent
-CONFIG_PATH = script_dir / "configs" / "config.yaml"
-
-with open(CONFIG_PATH, "r") as f:
-    CONFIG = yaml.safe_load(f)
-
-
-def get_select_expressions(layer: str, table_name: str):
-    rules = CONFIG[layer][table_name]
+def get_select_expressions(config_dict: dict, layer: str, table_name: str) -> list:
+    """
+    Builds Spark select expressions based on the provided configuration dictionary.
+    """
+    rules = config_dict[layer][table_name]
     select_expressions = []
 
     for c in rules['final_column_order']:
@@ -29,16 +24,8 @@ def get_select_expressions(layer: str, table_name: str):
 
     return select_expressions
 
-
-def get_merge_strategy(layer: str, table_name: str):
+def get_merge_strategy(config_dict: dict, layer: str, table_name: str) -> dict:
     """
     Returns the merge strategy for the given layer and table name.
-    Can be either reconciliation_rules for SCD Type 1
-    or tracked_attribute_cols for SCD Type 2
     """
-    return CONFIG[layer][table_name]["merge_strategy"]
-
-if __name__ == "__main__":
-    spark = get_spark_session()
-    a = get_select_expressions("silver", "fct_flights")
-    print(*a)
+    return config_dict[layer][table_name]["merge_strategy"]

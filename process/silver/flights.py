@@ -12,6 +12,8 @@ def write_flights_data(
     spark: SparkSession,
     enriched_flights: DataFrame,
     batch_time: datetime,
+    raw_base_path: str,
+    config_dict: dict
 ) -> None:
     """
     Writes the fct_flights table to a Delta table.
@@ -100,7 +102,7 @@ def write_flights_data(
         )
 
         # Get the select expressions for the fct_flights table
-        select_exprs = get_select_expressions("silver", "fct_flights")
+        select_exprs = get_select_expressions(config_dict, "silver", "fct_flights")
         fct_flights = fct_flights.select(*select_exprs)
 
     except Exception as e:
@@ -114,6 +116,7 @@ def write_flights_data(
             df=fct_flights,
             db_name="silver",
             table_name="fct_flights",
+            raw_base_path=raw_base_path,
             write_mode="overwrite_partitions",
             partition_cols=["ingestion_hour"]
         )

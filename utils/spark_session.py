@@ -85,8 +85,8 @@ def get_spark_session(app_name: str="Test Pipeline") -> SparkSession:
 
         dev_driver_memory = os.getenv("SPARK_DEV_DRIVER_MEMORY", "4g")
         builder = builder.config("spark.driver.memory", dev_driver_memory)
-    elif mode == "prod":
-        logging.info(f" Using warehouse directory: {SPARK_WAREHOUSE_PROD}")
+    elif mode == "prod_old":
+        logging.info(f"Using warehouse directory: {SPARK_WAREHOUSE_PROD}")
         
         DELTA_JAR_PATH = os.getenv("DELTA_JAR_PATH", "/shared/jars/delta-spark_2.12-3.2.0.jar")
         DELTA_STORAGE_JAR_PATH = os.getenv("DELTA_STORAGE_JAR_PATH", "/shared/jars/delta-storage-3.2.0.jar")
@@ -113,4 +113,32 @@ def get_spark_session(app_name: str="Test Pipeline") -> SparkSession:
                 .enableHiveSupport()
         )
 
+    elif mode == "prod":
+        # let spark-submit handle the configuration
+        pass
+
     return builder.getOrCreate()
+
+
+# Should get rid of the old function later
+def get_spark_session_v2(spark_config: dict) -> SparkSession:
+    logging.info(f"Initializing Spark with provided configuration.")
+
+    try:
+        spark = SparkSession.builder
+
+        if spark_config.pop("enable_hive_support", False):
+            spark = spark.enableHiveSupport()
+
+        for key, value in spark_config.items():
+            if key == "app_name":
+                spark = spark.appName(value)
+            else:
+                spark = spark.config(key, value)
+
+        spark = spark.getOrCreate()
+        logging.info("Spark session initialized successfully.")
+        return spark
+    except Exception as e:
+        logging.error(f"Failed to initialize Spark session: {e}", exc_info=True)
+        raise

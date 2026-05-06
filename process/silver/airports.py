@@ -17,6 +17,8 @@ def write_airports_data(
     bronze_airports: DataFrame,
     enriched_flights: DataFrame,
     batch_time: datetime,
+    raw_base_path: str,
+    config_dict: dict
 ) -> None:
     """
     Writes the dim_airports table to a Delta table.
@@ -27,7 +29,7 @@ def write_airports_data(
         logging.info("Flattening and cleaning detailed airport data.")
         flattened_airports_df = flatten_df(bronze_airports)
 
-        detailed_airports_select_exprs = get_select_expressions("silver", "dim_airports_detailed")
+        detailed_airports_select_exprs = get_select_expressions(config_dict, "silver", "dim_airports_detailed")
         detailed_airports_df = flattened_airports_df.select(*detailed_airports_select_exprs)
 
         logging.info("Extracting basic airport list from flight data.")
@@ -94,7 +96,7 @@ def write_airports_data(
         raise
 
     try:
-        merge_strategy = get_merge_strategy("silver", "dim_airports")
+        merge_strategy = get_merge_strategy(config_dict, "silver", "dim_airports")
 
         logging.info(f"Writing {dim_airports_df.count()} rows to dim_airports table")
         merge_delta_table(
@@ -102,6 +104,7 @@ def write_airports_data(
             arriving_df=dim_airports_df,
             db_name="silver",
             table_name="dim_airports",
+            raw_base_path=raw_base_path,
             merge_keys=["airport_bk"],
             reconciliation_rules=merge_strategy
         )
@@ -120,7 +123,9 @@ def filter_ourairports_airports(ourairports_airports: DataFrame):
 def write_ourairports_airports_data(
     spark: SparkSession,
     ourairports_airports: DataFrame,
-    batch_time: datetime
+    batch_time: datetime,
+    raw_base_path: str,
+    config_dict: dict
 ):
     """Write ourairports airports data to a Delta table."""
     logging.info(f"Starting to write ourairports airports data.")
@@ -143,7 +148,7 @@ def write_ourairports_airports_data(
             "home_link", "wikipedia_link", "keywords"
         )
 
-        select_exprs = get_select_expressions("silver", "dim_airports_ourairports")
+        select_exprs = get_select_expressions(config_dict, "silver", "dim_airports_ourairports")
         dim_airports_ourairports_df = dim_airports_ourairports_df.select(*select_exprs)
 
     except Exception as e:
@@ -151,7 +156,7 @@ def write_ourairports_airports_data(
         raise
 
     try:
-        merge_strategy = get_merge_strategy("silver", "dim_airports_ourairports")
+        merge_strategy = get_merge_strategy(config_dict, "silver", "dim_airports_ourairports")
 
         logging.info(f"Writing {dim_airports_ourairports_df.count()} rows to dim_airports_ourairports table")
         merge_delta_table(
@@ -159,6 +164,7 @@ def write_ourairports_airports_data(
             arriving_df=dim_airports_ourairports_df,
             db_name="silver",
             table_name="dim_airports",
+            raw_base_path=raw_base_path,
             merge_keys=["airport_bk"],
             reconciliation_rules=merge_strategy
         )

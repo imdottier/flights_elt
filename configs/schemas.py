@@ -234,7 +234,7 @@ current_time_schema = StructType([
 ])
 
 
-full_airport_schema = StructType([
+full_airport_schema: StructType = StructType([
     StructField("icao", StringType()),
     StructField("iata", StringType()),
     StructField("localCode", StringType()),
@@ -254,7 +254,7 @@ full_airport_schema = StructType([
 
 
 ## -- These schemas later are used for static csv files -- ##
-airport_csv_schema = StructType([
+airport_csv_schema: StructType = StructType([
     StructField("id", IntegerType(), False),                     # OurAirports internal ID
     StructField("ident", StringType(), True),                    # ICAO or local identifier
     StructField("type", StringType(), True),                     # large_airport, heliport, etc.

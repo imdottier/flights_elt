@@ -6,8 +6,10 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import logging
 
+from utils.expression_utils import load_config
+
 from utils.logging_utils import setup_logging
-from utils.spark_session import get_spark_session
+from utils.spark_session import get_spark_session_v2
 
 from crawler.time_utils import generate_batch_timestamps, valid_date_format
 from crawler.run_crawl_pipeline import run_crawl_pipeline
@@ -20,8 +22,10 @@ def run_full_pipeline(
     ingestion_hours: list[str],
     process_detailed_dims: bool,
     skip_crawl: bool,
+    raw_base_path: str,
     run_aerodatabox: bool = True,
     run_ourairports: bool = False,
+    config_dict: dict = None
 ):
     """
     Executes the entire data pipeline from crawl through silver.
@@ -29,36 +33,41 @@ def run_full_pipeline(
     try:
         batch_time = datetime.now(timezone.utc)
         logging.info(f"Batch runs at: {batch_time}")
-        spark = get_spark_session()
+
+        mode = config_dict.get("mode", "dev")
+        spark_config = config_dict.get("spark", {}).get(mode, {}) if config_dict else {}
+        spark = get_spark_session_v2(spark_config)
+
+        logging.info(f"Spark configuration: {spark.sparkContext.getConf().getAll()}")
 
         stage_counter = 1
 
         if run_aerodatabox:
             if not skip_crawl:
                 logging.info(f">>> STAGE {stage_counter}: CRAWL <<<")
-                run_crawl_pipeline(ingestion_hours=ingestion_hours, process_airports=process_detailed_dims)
+                run_crawl_pipeline(ingestion_hours=ingestion_hours, raw_base_path=raw_base_path, process_airports=process_detailed_dims)
                 logging.info(f">>> CRAWL STAGE COMPLETED <<<")
             stage_counter += 1
 
             logging.info(f">>> STAGE {stage_counter}: BRONZE <<<")
-            run_bronze_pipeline(spark=spark, ingestion_hours=ingestion_hours, process_airports=process_detailed_dims)
+            run_bronze_pipeline(spark=spark, ingestion_hours=ingestion_hours, raw_base_path=raw_base_path, process_airports=process_detailed_dims)
             logging.info(f">>> BRONZE STAGE COMPLETED <<<")
             stage_counter += 1
 
             logging.info(f">>> STAGE {stage_counter}: SILVER <<<")
-            run_silver_pipeline(spark=spark, ingestion_hours=ingestion_hours, process_runways=process_detailed_dims, batch_time=batch_time)
+            run_silver_pipeline(spark=spark, ingestion_hours=ingestion_hours, raw_base_path=raw_base_path, process_runways=process_detailed_dims, batch_time=batch_time, config_dict=config_dict)
             logging.info(f">>> SILVER STAGE COMPLETED <<<")
             stage_counter += 1
 
         if run_ourairports:
             logging.info(f">>> STAGE {stage_counter}: OURAIRPORTS <<<")
-            run_ourairports_pipeline(spark=spark)
+            run_ourairports_pipeline(spark=spark, raw_base_path=raw_base_path, config_dict=config_dict)
             logging.info(f">>> OURAIRPORTS STAGE COMPLETED <<<")
             stage_counter += 1
 
-        logging.info(f">>> STAGE {stage_counter}: PUBLISH <<<")
-        run_publish_pipeline(spark=spark)
-        logging.info(f">>> PUBLISH STAGE COMPLETED <<<")
+        # logging.info(f">>> STAGE {stage_counter}: PUBLISH <<<")
+        # run_publish_pipeline(spark=spark)
+        # logging.info(f">>> PUBLISH STAGE COMPLETED <<<")
 
     finally:
         # Ensure Spark is stopped even if a stage fails
@@ -132,6 +141,21 @@ if __name__ == "__main__":
         help="Show what would be executed without actually running any pipeline stages."
     )
 
+    # Data directory (mainly local or S3 path for testing)
+    parser.add_argument(
+        '--raw-base-path',
+        type=str,
+        default='./data',
+        help="Base path for raw data storage (default: ./data)"
+    )
+    # Working directory
+    parser.add_argument(
+        '--workspace-path',
+        type=str,
+        default='.',
+        help="Base path for workspace storage (default: .)"
+    )
+
     args = parser.parse_args()
 
     try:
@@ -163,11 +187,18 @@ if __name__ == "__main__":
             logging.info(f"Process detailed dimensions: {should_process_details}")
             logging.info(f"Skip crawl step: {args.skip_crawl}")
 
+            if args.raw_base_path:
+                logging.info(f"Using raw base path: {args.raw_base_path}")
+
             if args.dry_run:
                 logging.info(">>> DRY RUN MODE ENABLED <<<")
                 logging.info(f"Target ingestion hours: {batches_to_process}")
                 logging.info(f"Process detailed dimensions: {should_process_details}")
                 logging.info(f"Skip crawl step: {args.skip_crawl}")
+                logging.info(f"Raw base path: {args.raw_base_path}")
+                logging.info(f"Workspace path: {args.workspace_path}")
+                logging.info(f"Config path: {args.workspace_path + '/configs/config.yaml'}")
+                logging.info(f"Spark configuration: {load_config(args.workspace_path + '/configs/config.yaml').get('spark', {})}")
                 logging.info("No stages will be executed.")
                 exit(0)
 
@@ -176,7 +207,9 @@ if __name__ == "__main__":
             process_detailed_dims=should_process_details,
             skip_crawl=args.skip_crawl,
             run_aerodatabox=args.run_aerodatabox,
-            run_ourairports=args.run_ourairports
+            run_ourairports=args.run_ourairports,
+            raw_base_path=args.raw_base_path,
+            config_dict=load_config(args.workspace_path + "/configs/config.yaml")
         )
 
         logging.info("==================================================")

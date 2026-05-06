@@ -12,7 +12,7 @@ from pyspark.sql.functions import (
     lower, trim, when, length, regexp_extract,
 )
 
-from pyspark.sql.types import StructType,  StringType
+from pyspark.sql.types import StructType, StringType
 from delta.tables import DeltaTable
 
 from dotenv import load_dotenv
@@ -27,6 +27,7 @@ def json_to_df(
     spark: SparkSession,
     table_name: str,
     schema: StructType,
+    raw_base_path: str = None,
     ingestion_hours: list[str] | None = None,
 ):
     """
@@ -41,11 +42,11 @@ def json_to_df(
     Returns:
         DataFrame: The DataFrame read from the given path.
     """
-    base_path = BRONZE_RAW_BASE / table_name
+    base_path = f"{raw_base_path}/bronze_raw/{table_name}" if raw_base_path else None
 
     if ingestion_hours:
         # Read selected hours
-        paths = [str(base_path / f"ingestion_hour={hour}") for hour in ingestion_hours]
+        paths = [f"{base_path}/ingestion_hour={hour}" for hour in ingestion_hours]
         logging.info(f"Reading from selected partitions: {paths}")
     else:
         # Read all partitions
@@ -66,8 +67,8 @@ def json_to_df(
         raise
 
 
-def csv_to_df(spark: SparkSession, file_name: str) -> DataFrame:
-    file_path = base / "csv" / file_name
+def csv_to_df(spark: SparkSession, raw_base_path: str = None, file_name: str = None) -> DataFrame:
+    file_path = f"{raw_base_path}/csv/{file_name}" if raw_base_path and file_name else None
     return spark.read.csv(str(file_path), header=True, inferSchema=True)
 
 

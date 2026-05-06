@@ -13,7 +13,12 @@ from process.io_utils import write_delta_table
 from datetime import datetime, timezone, timedelta
 
 
-def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process_airports: bool = False):
+def run_bronze_pipeline(
+    spark: SparkSession,
+    ingestion_hours: list[str],
+    raw_base_path: str,
+    process_airports: bool = False,
+):
     """
     Runs the bronze pipeline for the given partitions.
 
@@ -30,6 +35,7 @@ def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process
             spark=spark,
             table_name="flights", 
             schema=flights_schema,
+            raw_base_path=raw_base_path,
             ingestion_hours=ingestion_hours
         )
 
@@ -38,6 +44,7 @@ def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process
             df=flights_df,
             db_name="bronze",
             table_name="flights",
+            raw_base_path=raw_base_path,
             write_mode="overwrite_partitions",
             partition_cols=["ingestion_hour"]
         )
@@ -52,7 +59,8 @@ def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process
             logging.info("Starting to process airports...")
             airports_df = json_to_df(
                 spark=spark,
-                table_name="airports", 
+                table_name="airports",
+                raw_base_path=raw_base_path,
                 schema=full_airport_schema
             )
 
@@ -61,6 +69,7 @@ def run_bronze_pipeline(spark: SparkSession, ingestion_hours: list[str], process
                 df=airports_df,
                 db_name="bronze",
                 table_name="airports",
+                raw_base_path=raw_base_path,
                 write_mode="overwrite_table"
             )
             logging.info("Successfully wrote airports to Delta table.")

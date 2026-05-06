@@ -13,7 +13,9 @@ def write_ourairports_regions_data(
     spark: SparkSession,
     ourairports_regions: DataFrame,
     ourairports_countries: DataFrame,
-    batch_time: datetime
+    batch_time: datetime,
+    raw_base_path: str,
+    config_dict: dict
 ) -> None:
     """
     Combine regions and countries data into dim_regions_df (more regions than countries)
@@ -38,10 +40,10 @@ def write_ourairports_regions_data(
             "_inserted_at", current_timestamp()
         )
 
-        select_exprs = get_select_expressions("silver", "dim_regions")
+        select_exprs = get_select_expressions(config_dict, "silver", "dim_regions")
         dim_regions_df = dim_regions_df.select(*select_exprs)
 
-    except:
+    except Exception as e:
         logging.error(f"Failed during transformation step for dim_regions_df: {e}", exc_info=True)
         raise
 
@@ -49,7 +51,8 @@ def write_ourairports_regions_data(
         logging.info(f"Writing {dim_regions_df.count()} rows to dim_regions_df table.")
         write_delta_table(
             spark=spark, df=dim_regions_df, db_name="silver",
-            table_name="dim_regions", write_mode="merge", merge_keys=["region_code"],
+            table_name="dim_regions", raw_base_path=raw_base_path,
+            write_mode="merge", merge_keys=["region_code"],
         )
         logging.info("Successfully wrote dim_regions_df to Delta table.")
 

@@ -15,7 +15,9 @@ from datetime import datetime
 def write_runways_data(
     spark: SparkSession,
     bronze_airports: DataFrame,
-    batch_time: datetime
+    batch_time: datetime,
+    raw_base_path: str,
+    config_dict: dict   
 ) -> None:
     """
     Process the runways data from the bronze_airports table and write it to the dim_runways_df table.
@@ -83,7 +85,7 @@ def write_runways_data(
         )
 
         rounded_runways = flattened_runways_df
-        merge_strategy = get_merge_strategy("silver", "dim_runways")
+        merge_strategy = get_merge_strategy(config_dict, "silver", "dim_runways")
         for c, decimals in merge_strategy.items():
             if decimals != -1:
                 rounded_runways = rounded_runways.withColumn(c, spark_round(c, decimals))
@@ -97,7 +99,7 @@ def write_runways_data(
         )
 
         # Get the select expressions for the dim_runways_df table
-        select_exprs = get_select_expressions("silver", "dim_runways")
+        select_exprs = get_select_expressions(config_dict, "silver", "dim_runways")
         dim_runways_df = flattened_runways_df.select(*select_exprs)
 
         business_keys = ["airport_bk", "true_heading", "latitude", "longitude"]
@@ -120,6 +122,7 @@ def write_runways_data(
         logging.info(f"Writing {dim_runways_df.count()} records to dim_runways_df table")
         merge_delta_table_with_scd(
             spark=spark, arriving_df=dim_runways_df, db_name="silver",
+            raw_base_path=raw_base_path,
             table_name="dim_runways", business_key="runway_bk",
             business_key_version="runway_version_bk", tracked_attribute_cols=merge_strategy,
             business_cols=business_keys,
@@ -135,7 +138,9 @@ def write_ourairports_runways_data(
     spark: SparkSession,
     ourairports_runways: DataFrame,
     ourairports_airports: DataFrame,
-    batch_time: datetime
+    batch_time: datetime,
+    raw_base_path: str,
+    config_dict: dict
 ) -> None:
     logging.info(f"Starting to write ourairports runways data")
 
@@ -191,7 +196,7 @@ def write_ourairports_runways_data(
 
         # Round columns, including tracked attributes and business keys
         rounded_runways = filtered_runways
-        merge_strategy = get_merge_strategy("silver", "dim_runways_ourairports")
+        merge_strategy = get_merge_strategy(config_dict, "silver", "dim_runways_ourairports")
         for c, decimals in merge_strategy.items():
             if decimals != -1:
                 rounded_runways = rounded_runways.withColumn(c, spark_round(c, decimals))
@@ -235,7 +240,7 @@ def write_ourairports_runways_data(
         )
 
         # Apply columns order
-        select_exprs = get_select_expressions("silver", "dim_runways_ourairports")
+        select_exprs = get_select_expressions(config_dict, "silver", "dim_runways_ourairports")
         dim_runways_df = dim_runways_df.select(*select_exprs)
 
         dim_runways_df = dim_runways_df.dropDuplicates(
@@ -250,6 +255,7 @@ def write_ourairports_runways_data(
         logging.info(f"Writing {dim_runways_df.count()} records to dim_runways_df table")
         merge_delta_table_with_scd(
             spark=spark, arriving_df=dim_runways_df, db_name="silver",
+            raw_base_path=raw_base_path,
             table_name="dim_runways", business_key="runway_bk",
             business_key_version="runway_version_bk", tracked_attribute_cols=merge_strategy,
             business_cols=["airport_bk", "true_heading", "latitude", "longitude"],
