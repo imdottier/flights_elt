@@ -1,11 +1,11 @@
 {{ config(materialized='view') }}
 
 WITH airports AS (
-    SELECT * FROM {{ source('staging', 'airports') }}
+    SELECT * FROM {{ source('silver', 'dim_airports') }}
 ),
 
 regions AS (
-    SELECT * FROM {{ source('staging', 'regions') }}
+    SELECT * FROM {{ source('silver', 'dim_regions') }}
 ),
 
 modified_airports AS (

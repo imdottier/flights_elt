@@ -1,11 +1,16 @@
 {{ config(
     materialized='incremental',
-    unique_key='runway_version_bk'    
+    unique_key='runway_version_bk',
+    file_format='delta'   
 ) }}
 
 
 WITH runways AS (
-    SELECT * FROM {{ source('staging', 'runways') }}
+    SELECT * FROM {{ source('silver', 'dim_runways') }}
+
+    {% if is_incremental() %}
+        WHERE _inserted_at > (SELECT MAX(_inserted_at) FROM {{ this }})
+    {% endif %}
 ),
 
 cleaned_runways AS (
@@ -30,9 +35,12 @@ cleaned_runways AS (
 
 unknown_runway AS (
     SELECT
-        encode(digest('-1', 'sha256'), 'hex') AS runway_version_bk,
-        encode(digest('-1', 'sha256'), 'hex') AS runway_bk,
-        encode(digest('-1', 'sha256'), 'hex') AS airport_bk,
+        sha2('-1', 256) AS runway_version_bk,
+        sha2('-1', 256) AS runway_bk,
+        sha2('-1', 256) AS airport_bk,
+        -- encode(digest('-1', 'sha256'), 'hex') AS runway_version_bk,
+        -- encode(digest('-1', 'sha256'), 'hex') AS runway_bk,
+        -- encode(digest('-1', 'sha256'), 'hex') AS airport_bk,
         'UNK' AS runway_name,
         0.0 AS true_heading,
         'Unknown' AS surface,

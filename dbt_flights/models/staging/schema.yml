@@ -1,14 +1,13 @@
 version: 2
 
 sources:
-  - name: staging # This is the "source" name we'll use in dbt's ref() function
-    database: flights_dw # Or your postgres database name
-    schema: stg # The schema your Spark job loads data into
+  - name: silver # This is the "source" name we'll use in dbt's ref() function
+    schema: silver # The schema your Spark job loads data into
     
     # Define each table that your Spark job creates
     tables:
-      - name: regions
-        identifier: regions # The actual table name in the 'stg' schema
+      - name: dim_regions
+        identifier: dim_regions # The actual table name in the 'silver' schema
         description: "Raw region data loaded from the Silver layer."
         columns:
           - name: region_code
@@ -17,8 +16,8 @@ sources:
               - unique
               - not_null
 
-      - name: airlines
-        identifier: airlines
+      - name: dim_airlines
+        identifier: dim_airlines
         description: "Raw airline data loaded from the Silver layer."
         columns:
           - name: airline_bk
@@ -27,8 +26,8 @@ sources:
               - unique
               - not_null
 
-      - name: aircrafts
-        identifier: aircrafts
+      - name: dim_aircrafts
+        identifier: dim_aircrafts
         description: "Raw aircraft data loaded from the Silver layer."
         columns:
           - name: aircraft_bk
@@ -37,8 +36,8 @@ sources:
               - unique
               - not_null
 
-      - name: airports
-        identifier: airports
+      - name: dim_airports
+        identifier: dim_airports
         description: "Raw airport data loaded from the Silver layer."
         columns:
           - name: airport_bk
@@ -51,11 +50,11 @@ sources:
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'regions')
+                    to: source('silver', 'dim_regions')
                     field: region_code
 
-      - name: runways
-        identifier: runways
+      - name: dim_runways
+        identifier: dim_runways
         description: "Raw, versioned runway data (SCD2) from the Silver layer."
         columns:
           - name: runway_version_bk
@@ -69,11 +68,11 @@ sources:
               - not_null
               - relationships:
                   arguments:
-                    to: source('staging', 'airports')
+                    to: source('silver', 'dim_airports')
                     field: airport_bk
 
-      - name: flights
-        identifier: flights
+      - name: fct_flights
+        identifier: fct_flights
         description: "Raw, partitioned flight data from the Silver layer."
         columns:
           - name: flight_composite_pk
@@ -89,54 +88,54 @@ sources:
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'airports')
+                    to: source('silver', 'dim_airports')
                     field: airport_bk
           - name: arrival_airport_bk
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'airports')
+                    to: source('silver', 'dim_airports')
                     field: airport_bk
           - name: airline_bk
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'airlines')
+                    to: source('silver', 'dim_airlines')
                     field: airline_bk
           - name: aircraft_bk
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'aircrafts')
+                    to: source('silver', 'dim_aircrafts')
                     field: aircraft_bk
           - name: departure_runway_version_bk
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'runways')
+                    to: source('silver', 'dim_runways')
                     field: runway_version_bk
           - name: arrival_runway_version_bk
             tests:
               - relationships:
                   arguments:
-                    to: source('staging', 'runways')
+                    to: source('silver', 'dim_runways')
                     field: runway_version_bk
 
-  # You can keep your dwh_meta source here as well
-  - name: dwh_meta
-    database: flights_dw
-    schema: dwh_meta
-    tables:
-      - name: _dwh_watermarks
-        description: "Stores high-watermark timestamps for ETL loading processes."
-        columns:
-          - name: table_name
-            description: "The name of the table the watermark applies to."
-            tests:
-              - unique
-              - not_null
-          - name: last_inserted_at
-            description: "The latest _inserted_at timestamp successfully loaded for this table."
+  # # You can keep your dwh_meta source here as well
+  # - name: dwh_meta
+  #   database: flights_dw
+  #   schema: dwh_meta
+  #   tables:
+  #     - name: _dwh_watermarks
+  #       description: "Stores high-watermark timestamps for ETL loading processes."
+  #       columns:
+  #         - name: table_name
+  #           description: "The name of the table the watermark applies to."
+  #           tests:
+  #             - unique
+  #             - not_null
+  #         - name: last_inserted_at
+  #           description: "The latest _inserted_at timestamp successfully loaded for this table."
 
 
 

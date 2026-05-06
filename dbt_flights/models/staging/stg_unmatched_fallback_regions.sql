@@ -1,11 +1,11 @@
 {{ config(materialized='view') }}
 
 WITH airports AS (
-    SELECT * FROM {{ source('staging', 'airports') }}
+    SELECT * FROM {{ source('silver', 'dim_airports') }}
 ),
 
 regions AS (
-    SELECT * FROM {{ source('staging', 'regions') }}
+    SELECT * FROM {{ source('silver', 'dim_regions') }}
 ),
 
 joined_airports AS (
@@ -31,8 +31,8 @@ SELECT
     CONCAT_WS('|', 'UNK', COALESCE(a_iso_country, a_country_name)) AS iso_region_resolved,
     a_iso_country AS iso_country_resolved,
     a_country_name AS country_name_resolved,    
-    CURRENT_TIMESTAMP::timestamp AS ingested_at,
-    CURRENT_TIMESTAMP::timestamp AS inserted_at
+    CURRENT_TIMESTAMP::timestamp AS _ingested_at,
+    CURRENT_TIMESTAMP::timestamp AS _inserted_at
 
 FROM joined_airports a
 WHERE region_code IS NULL

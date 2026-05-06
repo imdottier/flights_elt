@@ -34,7 +34,7 @@ BASE_URL = "https://prod.api.market/api/v1/aedbx/aerodatabox"
 API_BATCH_DURATION_MINUTES = 12 * 60 # 720
 
 
-def get_flights(iata_code: str, ingestion_hour: str) -> bool:
+def get_flights(iata_code: str, ingestion_hour: str, raw_base_path: str) -> bool:
     """Fetches and writes flight data for a given airport. Returns True on success, False on failure."""
     url = f"{BASE_URL}/flights/airports/Iata/{iata_code}"
     
@@ -48,7 +48,7 @@ def get_flights(iata_code: str, ingestion_hour: str) -> bool:
         
         # And the offset mins (mins from mark to now) for api
         offset_minutes = int((start_time - current_time_for_api).total_seconds() // 60)
-        path = f"flights/ingestion_hour={ingestion_hour}/airport={iata_code}"
+        full_path = f"{raw_base_path}/flights/ingestion_hour={ingestion_hour}/airport={iata_code}/payload.json"
 
         params = {
             "offsetMinutes": offset_minutes,
@@ -65,7 +65,7 @@ def get_flights(iata_code: str, ingestion_hour: str) -> bool:
         response.raise_for_status()
 
         data = response.json()
-        write_json_to_bronze(data, path, "payload.json")
+        write_json_to_bronze(data, full_path)
         return True
 
     except requests.exceptions.HTTPError as e:
@@ -80,12 +80,12 @@ def get_flights(iata_code: str, ingestion_hour: str) -> bool:
     return False
 
 
-def get_airport(iata_code: str) -> bool:
+def get_airport(iata_code: str, raw_base_path: str) -> bool:
     """Fetches and writes flight data for a given airport. Returns True on success, False on failure."""
     url = f"{BASE_URL}/airports/Iata/{iata_code}"
     
     try:
-        path = f"airports/airport={iata_code}"
+        full_path = f"{raw_base_path}/airports/airport={iata_code}/payload.json"
 
         params = {
             "withRunways": "true",
@@ -97,7 +97,7 @@ def get_airport(iata_code: str) -> bool:
         response.raise_for_status()
 
         data = response.json()
-        write_json_to_bronze(data, path, "payload.json")
+        write_json_to_bronze(data, full_path)
         return True
 
     except requests.exceptions.HTTPError as e:

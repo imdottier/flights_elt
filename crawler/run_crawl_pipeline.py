@@ -25,7 +25,11 @@ AIRPORT_PATH = config_path / "airports.json"
 
 
 # --- main function (MODIFIED for historical runs) ---
-def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False):
+def run_crawl_pipeline(
+    ingestion_hours: list[str],
+    raw_base_path: str,
+    process_airports: bool=False,
+):
     """
     Main execution block for the crawl process.
 
@@ -52,7 +56,7 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
             iata = airport['iata']
 
             logging.info(f"Fetching data for {airport['airportName']} ({iata})")
-            success = get_airport(iata_code=iata)
+            success = get_airport(iata_code=iata, raw_base_path=raw_base_path)
 
             if success:
                 airport_summary["processed"].append(iata)
@@ -92,7 +96,7 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
 
                 logging.info(f"Fetching flights for {airport['airportName']} ({iata})")
                 
-                success = get_flights(iata_code=iata, ingestion_hour=ingestion_hour)
+                success = get_flights(iata_code=iata, ingestion_hour=ingestion_hour, raw_base_path=raw_base_path)
 
                 if success:
                     crawl_summary["processed_airports"].append(iata)
@@ -121,7 +125,7 @@ def run_crawl_pipeline(ingestion_hours: list[str], process_airports: bool=False)
                 json.dump(crawl_summary, f, indent=2)
             
             logging.info(f"--- Batch Finished for {ingestion_hour} ---")
-            logging.info(f"Success: {crawl_summary['total_success']}, Failed: {crawl_summary['total_failed']}")
+            logging.info(f"Success: {crawl_summary['total_success']}, Failed: {crawl_summary['total_failed']}, Skipped: {crawl_summary['total_skipped']}")
             logging.info(f"Crawl summary saved to: {summary_filepath}")
     
 

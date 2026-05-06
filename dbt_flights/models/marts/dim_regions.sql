@@ -1,13 +1,18 @@
 {{ config(
     materialized='incremental',
-    unique_key='region_code'    
+    unique_key='region_code',    
+    file_format='delta'
 ) }}
 
 WITH regions AS (
-    SELECT * FROM {{ source('staging', 'regions') }}
+    SELECT * FROM {{ source('silver', 'dim_regions') }}
 ),
 unmatched_fallback_regions AS (
     SELECT * FROM {{ ref('stg_unmatched_fallback_regions') }}
+
+    {% if is_incremental() %}
+        WHERE _inserted_at > (SELECT MAX(_inserted_at) FROM {{ this }})
+    {% endif %}
 ),
 union_regions AS (
     SELECT
@@ -33,8 +38,8 @@ union_regions AS (
         NULL AS continent_code,
         NULL AS iso_country,
         NULL AS country_name,
-        ingested_at AS _ingested_at,
-        inserted_at AS _inserted_at,
+        _ingested_at,
+        _inserted_at,
         iso_region_resolved,
         iso_country_resolved,
         country_name_resolved

@@ -1,6 +1,7 @@
 {{ config(
     materialized='incremental',
-    unique_key='airport_bk'    
+    unique_key='airport_bk',
+    file_format='delta'
 ) }}
 
 
@@ -16,7 +17,6 @@
     'airport_name',
     'municipality_name',
     'country_name',
-    'continent_name',
     'latitude',
     'longitude',
     'elevation_feet',
@@ -45,7 +45,7 @@
     'matching_airports': [
         'airport_bk', 'iso_region', 'iso_country', 'airport_iata', 'airport_icao',
         'airport_gps', 'airport_local_code', 'airport_name', 'municipality_name',
-        'country_name', 'continent_name', 'latitude', 'longitude', 'elevation_feet',
+        'country_name', 'latitude', 'longitude', 'elevation_feet',
         'airport_type', 'scheduled_service', 'airport_time_zone', '_ingested_at',
         '_inserted_at', 'iso_region_fallback', 'r_region_code', 'r_iso_country', 
         'r_country_name', 'iso_region_resolved', 'iso_country_resolved', 'country_name_resolved'
@@ -53,7 +53,7 @@
     'matched_fallback': [
         'airport_bk', 'iso_region', 'iso_country', 'airport_iata', 'airport_icao',
         'airport_gps', 'airport_local_code', 'airport_name', 'municipality_name',
-        'country_name', 'continent_name', 'latitude', 'longitude', 'elevation_feet',
+        'country_name', 'latitude', 'longitude', 'elevation_feet',
         'airport_type', 'scheduled_service', 'airport_time_zone', '_ingested_at',
         '_inserted_at', 'iso_region_fallback', 'r_region_code', 'r_iso_country',
         'r_country_name', 'r2_region_code', 'r2_iso_country', 'r2_country_name',
@@ -62,7 +62,7 @@
     'unmatched_fallback': [
         'airport_bk', 'iso_region', 'iso_country', 'airport_iata', 'airport_icao',
         'airport_gps', 'airport_local_code', 'airport_name', 'municipality_name',
-        'country_name', 'continent_name', 'latitude', 'longitude', 'elevation_feet',
+        'country_name', 'latitude', 'longitude', 'elevation_feet',
         'airport_type', 'scheduled_service', 'airport_time_zone', '_ingested_at',
         '_inserted_at', 'iso_region_fallback', 'r_region_code', 'r_iso_country',
         'r_country_name', 'r2_region_code', 'r2_iso_country', 'r2_country_name',
@@ -71,26 +71,38 @@
     'unknown_airport': [
         'airport_bk', 'airport_iata', 'airport_icao', 'airport_gps', 'airport_local_code',
         'airport_name', 'municipality_name', 'iso_region', 'iso_country', 'country_name',
-        'continent_name', 'latitude', 'longitude', 'elevation_feet', 'airport_type',
+        'latitude', 'longitude', 'elevation_feet', 'airport_type',
         'scheduled_service', 'airport_time_zone'
     ]
 } %}
 
 WITH matching_airports AS (
     SELECT * FROM {{ ref('stg_matching_airports') }}
+
+    {% if is_incremental() %}
+        WHERE _inserted_at > (SELECT MAX(_inserted_at) FROM {{ this }})
+    {% endif %}
 ),
 
 matched_fallback AS (
     SELECT * FROM {{ ref('stg_matched_fallback') }}
+
+    {% if is_incremental() %}
+        WHERE _inserted_at > (SELECT MAX(_inserted_at) FROM {{ this }})
+    {% endif %}
 ),
 
 unmatched_fallback AS (
     SELECT * FROM {{ ref('stg_unmatched_fallback') }}
+
+    {% if is_incremental() %}
+        WHERE _inserted_at > (SELECT MAX(_inserted_at) FROM {{ this }})
+    {% endif %}
 ),
 
 unknown_airport AS (
     SELECT
-        encode(digest('-1', 'sha256'), 'hex') AS airport_bk,
+        sha2('-1', 256) AS airport_bk,
         'UNK' AS airport_iata,
         'UNK' AS airport_icao,
         NULL AS airport_gps,
@@ -100,7 +112,6 @@ unknown_airport AS (
         'ZZ-U-A' AS iso_region, -- code for unknown region
         'Unknown' AS iso_country,
         'Unknown' AS country_name,
-        'Unknown' AS continent_name,
         0.0 AS latitude,
         0.0 AS longitude,
         0.0 AS elevation_feet,

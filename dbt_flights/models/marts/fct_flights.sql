@@ -1,12 +1,19 @@
 {{ config(
     materialized='incremental',
-    unique_key='flight_composite_pk'    
+    file_format='delta',
+    incremental_strategy='merge',
+    unique_key='flight_composite_pk',
+    partition_by=["ingestion_hour"]
 ) }}
 
 
 WITH flights AS (
     SELECT *
-    FROM {{ source('staging', 'flights') }}
+    FROM {{ source('silver', 'fct_flights') }}
+
+    {% if is_incremental() %}
+        WHERE _inserted_at > (SELECT MAX(_inserted_at) FROM {{ this }})
+    {% endif %}
 ),
 
 airports AS (
@@ -14,15 +21,15 @@ airports AS (
 ),
 
 airlines AS (
-    SELECT * FROM {{ source('staging', 'airlines') }}
+    SELECT * FROM {{ source('silver', 'dim_airlines') }}
 ),
 
 runways AS (
-    SELECT * FROM {{ source('staging', 'runways') }}
+    SELECT * FROM {{ source('silver', 'dim_runways') }}
 ),
 
 aircrafts AS (
-    SELECT * FROM {{ source('staging', 'aircrafts') }}
+    SELECT * FROM {{ source('silver', 'dim_aircrafts') }}
 ),
 
 regions AS (
@@ -78,6 +85,7 @@ lookup AS (
 base AS (
     SELECT
         f.*,
+        to_date(coalesce(f.dep_scheduled_at_utc, f.arr_scheduled_at_utc)) AS flight_date,
         dap.airport_iata AS departure_airport_iata_code,
         dap.airport_icao AS departure_airport_icao_code,
         dap.airport_name AS departure_airport_name,
@@ -96,44 +104,44 @@ base AS (
         aap.country_name AS arrival_country_name,
         ar.continent_code AS arrival_continent_code,
 
-        TO_CHAR(f.dep_scheduled_at_utc, 'YYYYMMDD')::INT AS departure_date_key,
-        TO_CHAR(f.arr_scheduled_at_utc, 'YYYYMMDD')::INT AS arrival_date_key,
-        EXTRACT(HOUR FROM dep_scheduled_at_utc) AS dep_hour_utc,
-        EXTRACT(DOW FROM dep_scheduled_at_utc) AS dep_day_of_week,
-        EXTRACT(HOUR FROM arr_scheduled_at_utc) AS arr_hour_utc,
-        EXTRACT(DOW FROM arr_scheduled_at_utc) AS arr_day_of_week,
+        cast(date_format(f.dep_scheduled_at_utc, 'yyyyMMdd') AS INT) AS departure_date_key,
+        cast(date_format(f.arr_scheduled_at_utc, 'yyyyMMdd') AS INT) AS arrival_date_key,
+        hour(dep_scheduled_at_utc) AS dep_hour_utc,
+        dayofweek(dep_scheduled_at_utc) - 1 AS dep_day_of_week,
+        hour(arr_scheduled_at_utc) AS arr_hour_utc,
+        dayofweek(arr_scheduled_at_utc) - 1 AS arr_day_of_week,
 
         -- === DERIVED MEASURES & FLAGS ===
         -- Durations (Robust against NULLs)
         CASE
             WHEN f.arr_scheduled_at_utc IS NOT NULL AND f.dep_scheduled_at_utc IS NOT NULL THEN
-                (EXTRACT(EPOCH FROM (f.arr_scheduled_at_utc - f.dep_scheduled_at_utc))) / 60
+                (cast(f.arr_scheduled_at_utc AS long) - cast(f.dep_scheduled_at_utc AS long)) / 60
             ELSE NULL
         END AS scheduled_duration_minutes,
         
         CASE
             WHEN f.arr_runway_at_utc IS NOT NULL AND f.dep_runway_at_utc IS NOT NULL THEN
-                (EXTRACT(EPOCH FROM (f.arr_runway_at_utc - f.dep_runway_at_utc))) / 60
+                (cast(f.arr_runway_at_utc AS long) - cast(f.dep_runway_at_utc AS long)) / 60
             ELSE NULL
         END AS actual_duration_minutes,
 
         -- Delays (Robust against NULLs) - IMPORTANT: Define these first to reuse them
         CASE
             WHEN f.dep_runway_at_utc IS NOT NULL AND f.dep_scheduled_at_utc IS NOT NULL THEN
-                (EXTRACT(EPOCH FROM (f.dep_runway_at_utc - f.dep_scheduled_at_utc))) / 60
+                (cast(f.dep_runway_at_utc AS long) - cast(f.dep_scheduled_at_utc AS long)) / 60
             ELSE NULL
         END AS delay_departure_minutes,
         
         CASE
             WHEN f.arr_runway_at_utc IS NOT NULL AND f.arr_scheduled_at_utc IS NOT NULL THEN
-                (EXTRACT(EPOCH FROM (f.arr_runway_at_utc - f.arr_scheduled_at_utc))) / 60
+                (cast(f.arr_runway_at_utc AS long) - cast(f.arr_scheduled_at_utc AS long)) / 60
             ELSE NULL
         END AS delay_arrival_minutes,
 
         -- Taxi Times
         CASE
             WHEN f.dep_runway_at_utc IS NOT NULL AND f.dep_revised_at_utc IS NOT NULL THEN
-                (EXTRACT(EPOCH FROM (f.dep_runway_at_utc - f.dep_revised_at_utc))) / 60
+                (cast(f.dep_runway_at_utc AS long) - cast(f.dep_revised_at_utc AS long)) / 60
             ELSE NULL
         END AS taxi_out_minutes,
 
@@ -158,7 +166,6 @@ base AS (
     LEFT JOIN
         regions AS ar
         ON aap.iso_region = ar.region_code
-
 ),
 
 haversine_a AS (
@@ -183,7 +190,7 @@ final_distance AS (
     -- Compute distance in kilometers
     SELECT
         f.*,
-        ROUND((6371 * c)::numeric, 2) AS distance_km
+        ROUND(6371 * c, 2) AS distance_km
     FROM haversine_c AS f
 )
 
@@ -193,6 +200,7 @@ SELECT
     f.flight_composite_pk,
     -- Planned to partition by flight_date but Postgres is funny so no
     f.flight_date,
+
     
     f.departure_airport_bk,
     f.arrival_airport_bk,
@@ -201,12 +209,14 @@ SELECT
     COALESCE(
         f.departure_runway_version_bk,
         f.departure_runway_version_bk_resolved,
-        encode(digest('-1', 'sha256'), 'hex')
+        sha2('-1', 256)
+        -- encode(digest('-1', 'sha256'), 'hex')
     ) AS departure_runway_version_bk,
     COALESCE(
         f.arrival_runway_version_bk,
         f.arrival_runway_version_bk_resolved,
-        encode(digest('-1', 'sha256'), 'hex')
+        sha2('-1', 256)
+        -- encode(digest('-1', 'sha256'), 'hex')
     ) AS arrival_runway_version_bk,
     f.departure_date_key,
     f.arrival_date_key,
@@ -282,7 +292,7 @@ SELECT
     f.distance_km,
     CASE 
         WHEN actual_duration_minutes > 0
-            THEN ROUND(((f.distance_km / actual_duration_minutes) * 60)::numeric, 2)
+            THEN ROUND((f.distance_km / actual_duration_minutes) * 60, 2)
         ELSE NULL
     END AS avg_speed_kmh,
 
